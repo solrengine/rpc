@@ -98,22 +98,36 @@ module Solrengine
 
       def rpc_request(method, params = [])
         uri = URI.parse(@rpc_url)
-        http = ssl_http(uri)
-
-        request = Net::HTTP::Post.new(uri.request_uri.empty? ? "/" : uri.request_uri)
-        request["Content-Type"] = "application/json"
-        request.body = {
+        body = {
           jsonrpc: "2.0",
           id: 1,
           method: method,
           params: params
         }.to_json
 
-        response = http.request(request)
-        JSON.parse(response.body)
-      rescue => e
+        attempts = 0
+        begin
+          attempts += 1
+          http = ssl_http(uri)
+          request = Net::HTTP::Post.new(uri.request_uri.empty? ? "/" : uri.request_uri)
+          request["Content-Type"] = "application/json"
+          request.body = body
+          response = http.request(request)
+          JSON.parse(response.body)
+        rescue Errno::EPIPE, Errno::ECONNRESET, EOFError, IOError => e
+          # Pooled connection may have been closed by the server; drop and
+          # retry once with a fresh connection.
+          reset_pooled_http(uri)
+          retry if attempts < 2
+          rescue_rpc_error(e)
+        rescue => e
+          rescue_rpc_error(e)
+        end
+      end
+
+      def rescue_rpc_error(error)
         if defined?(Rails)
-          Rails.logger.error("Solrengine RPC error: #{e.class} - #{e.message}")
+          Rails.logger.error("Solrengine RPC error: #{error.class} - #{error.message}")
         end
         {}
       end
